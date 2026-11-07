@@ -1,0 +1,84 @@
+{
+  "name": "omp-dashboard",
+  "version": "0.1.0",
+  "displayName": "OMP Dashboard",
+  "description": "One dashboard page for the omp coding agent: API-equivalent spend over 24h to 30d with provider, model and agent-type breakdowns; live usage limits for every logged-in account with bell alerts at 90%; and a tally of every subagent run with a live transcript inspector. Reads omp's own stats database and session files, read-only.",
+  "author": "tommy",
+  "license": "MIT",
+  "minKiroCrewVersion": "0.13.0",
+  "tags": ["omp", "monitoring", "usage", "spend", "agents"],
+  "highlights": [
+    "Overview: spend tiles for 24h, 3 days, 7 days and 30 days, a 14-day spend strip, the limits closest to running out and what the agents are doing now",
+    "Spend: API-equivalent cost by provider, model and agent type, with cache-hit rate, time to first token and tokens per second",
+    "Limits: one row per limit across every provider account; amber from 75% used, red from 90% or exhausted",
+    "Bell notification once per limit and reset window at 90% and when a limit is exhausted, even with no dashboard tab open",
+    "Agents: every omp subagent by type with OK rate, cost and timeline, plus a live transcript inspector for any run",
+    "A composer chip shows the busiest limit and tints amber from 75%"
+  ],
+  "useCases": [
+    "See what omp is costing at list price before a bill or a quota runs out",
+    "Notice that a 5-hour or weekly limit is about to be exhausted before an agent session stalls on it",
+    "Watch a long-running subagent without leaving the dashboard"
+  ],
+  "configuration": [
+    "Requires the omp CLI on the machine running Kiro Crew, with its stats database at ~/.omp/stats.db and sessions under ~/.omp/agent/sessions; enable the app and open OMP Dashboard from the sidebar.",
+    "Override locations with OMP_BIN, OMP_DASHBOARD_STATS_DB and OMP_DASHBOARD_SESSIONS_DIR if omp keeps its data elsewhere."
+  ],
+  "iconPath": "assets/icon.png",
+  "screenshots": [
+    "assets/screenshots/overview.png",
+    "assets/screenshots/spend.png",
+    "assets/screenshots/limits.png",
+    "assets/screenshots/agents.png"
+  ],
+  "dependencies": {
+    "commands": ["omp"]
+  },
+  "backend": {
+    "entryPoint": "backend/server.py",
+    "port": "auto",
+    "healthCheck": "/health"
+  },
+  "ui": {
+    "entry": "dist/page.mjs",
+    "pages": [
+      {
+        "route": "/apps/omp-dashboard",
+        "label": "OMP Dashboard",
+        "icon": "Package",
+        "iconUrl": "icon.svg"
+      }
+    ],
+    "sidebar": {
+      "section": "Apps",
+      "order": 20
+    }
+  },
+  "contributes": {
+    "sessionControls": [
+      {
+        "id": "usage",
+        "entryPoint": "dist/control.mjs",
+        "label": "OMP usage",
+        "icon": "Zap",
+        "statusPath": "status"
+      }
+    ]
+  },
+  "permissions": {
+    "api": ["/apps/omp-dashboard/api"]
+  },
+  "notifications": {
+    "channels": [
+      {
+        "id": "usage-alerts",
+        "name": "OMP usage alerts",
+        "icon": "Bell",
+        "defaultPriority": "default"
+      }
+    ]
+  },
+  "platform": {
+    "os": ["macos", "linux"]
+  }
+}
