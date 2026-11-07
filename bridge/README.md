@@ -40,6 +40,6 @@ flowchart LR
 ## Tests
 
 ```sh
-node --test test/
+node --test test/*.test.mjs
 cd cron-medic && bun install && bun test
 ```

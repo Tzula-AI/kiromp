@@ -132,13 +132,13 @@ Remove the two symlinks in `~/.local/bin`, run `kirocrew config set agent.acp_ba
 ## Tests
 
 ```sh
-node --test bridge/test/
+node --test bridge/test/*.test.mjs
 (cd bridge/cron-medic && bun install && bun test)
 (cd apps/omp-dashboard && python -m pytest -q)
 (cd apps/omp-dashboard/ui && npm install && bun test)
 ```
 
-Four bridge tests fail when they run inside a live Crew session, because the session's env vars leak into them. They pass in a clean shell.
+Five bridge tests fail when they run inside a live Crew session, because the session's env vars leak into them. They pass in a clean shell.
 
 ## Known limits
 

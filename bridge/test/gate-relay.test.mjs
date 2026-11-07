@@ -231,6 +231,34 @@ test("edit: other non-absolute spellings and other tools reach the gate unchange
 	assert.equal(globalThis.__gateSeen.at(-1).e, bash);
 });
 
+test("edit: a placeholder header tag is refused with omp's guidance and never reaches the gate", async () => {
+	const pi = await load();
+	const ui = fakeUi("parent");
+	const ctx = fakeCtx({ hasUI: true, ui });
+	for (const header of ["[/w/a.ts#?]", "[/w/a.ts#AUTO]", "[/w/a.ts#????]", "[/w/a.ts#]", "[/w/conf##host]"]) {
+		const text = `[/w/ok.ts#3BDF]\nPUT 1.=1:\n+x\n${header}\r\nPUT >1:\n+y\n`;
+		const [res] = await pi.emit("tool_call", { toolName: "edit", input: { input: text } }, ctx);
+		assert.equal(res.block, true, header);
+		assert.ok(res.reason.includes(`got "${header}"`), res.reason);
+		assert.match(res.reason, /4-hex content-hash tag/);
+	}
+	assert.deepEqual(globalThis.__gateSeen, [], "the gate never saw a placeholder-tag edit");
+	assert.deepEqual(ui.calls, []);
+});
+
+test("edit: valid tags, # inside paths, body rows and other tools still reach the gate", async () => {
+	const pi = await load();
+	const ctx = fakeCtx({ hasUI: true, ui: fakeUi("parent") });
+	const text = "[/w/conf.yaml##host.home#ABCD]\nPUT 1.=1:\n+[/w/x#?]\n[/w/plain]\n[/w/b.ts#0f9e]\nREM";
+	const [res] = await pi.emit("tool_call", { toolName: "edit", input: { input: text } }, ctx);
+	assert.equal(res, undefined);
+	assert.equal(globalThis.__gateSeen.at(-1).e.input.input, text);
+
+	const write = { toolName: "write", input: { path: "/w/a.ts", input: "[/w/a.ts#?]" } };
+	await pi.emit("tool_call", write, ctx);
+	assert.equal(globalThis.__gateSeen.at(-1).e, write);
+});
+
 // Fake gate doing what Crew's gate does with its MCP handoff: register each server,
 // count a throw as shadowed, then read the registrations back.
 const MCP_GATE = `
@@ -279,4 +307,90 @@ test("mcp: a pi that has the methods keeps its own", async () => {
 	assert.equal(out.servers.length, 3);
 	assert.ok(out.servers.every((s) => s.real), "the real pi's registration was used");
 	delete globalThis.__mcpGate;
+});
+
+// Fake Crew gate steer half: like the real one, its turn_end handler skips an idle
+// session, then synchronously queues the oldest steer file above its floor with
+// deliverAs "steer".
+const STEER_GATE = `
+import { readdirSync } from "node:fs";
+export default function (pi) {
+  let floor = 0;
+  pi.on("turn_end", async (e, ctx) => {
+    if (ctx.isIdle()) return;
+    const dir = process.env.__STEER_DIR;
+    const next = readdirSync(dir).filter((n) => n.startsWith("stem-")).sort()
+      .map((n) => Number(n.slice(5, 15))).find((s) => s > floor);
+    if (next === undefined) return;
+    floor = next;
+    pi.sendMessage({ customType: "kiro-crew-steer", content: [], details: { seq: next } }, { deliverAs: "steer" });
+  });
+}
+`;
+
+class SteerPi extends FakePi {
+	#sent = [];
+	sendMessage(message, options) {
+		this.#sent.push({ seq: message.details.seq, options });
+	}
+	get sent() {
+		return this.#sent;
+	}
+}
+
+async function loadSteers() {
+	const dir = fs.mkdtempSync(path.join(TMP, "steers-"));
+	const gate = path.join(TMP, "steer_gate.mjs");
+	fs.writeFileSync(gate, STEER_GATE);
+	process.env[ENV] = gate;
+	process.env.KIROCREW_PI_STEER = path.join(dir, "stem-");
+	process.env.__STEER_DIR = dir;
+	const pi = new SteerPi();
+	await relay(pi);
+	delete process.env.KIROCREW_PI_STEER;
+	const write = (seq) => fs.writeFileSync(path.join(dir, `stem-${String(seq).padStart(10, "0")}.json`), "{}");
+	return { pi, write };
+}
+
+const settle = () => new Promise((r) => setTimeout(r, 800));
+const steerCtx = (hasUI, idle) => ({ ...fakeCtx({ hasUI, ui: fakeUi("p") }), isIdle: () => idle });
+
+test("steer: a file written mid-tool reaches omp's steering queue without waiting for turn_end", async () => {
+	const { pi, write } = await loadSteers();
+	await pi.emit("agent_start", {}, steerCtx(true, false));
+	write(1);
+	await settle();
+	assert.deepEqual(pi.sent, [{ seq: 1, options: { deliverAs: "steer" } }]);
+	await pi.emit("turn_end", { message: { stopReason: "toolUse" } }, steerCtx(true, false));
+	assert.equal(pi.sent.length, 1, "the gate's floor keeps a steer from being delivered twice");
+	write(2);
+	write(3);
+	await settle();
+	assert.deepEqual(pi.sent.map((s) => s.seq), [1, 2, 3], "every new file is delivered, in order");
+});
+
+test("steer: omp idle while waiting on background work starts a run for the steer", async () => {
+	const { pi, write } = await loadSteers();
+	await pi.emit("agent_start", {}, steerCtx(true, false));
+	await pi.emit("agent_end", { willContinue: true }, steerCtx(true, true));
+	write(1);
+	await settle();
+	assert.deepEqual(pi.sent, [{ seq: 1, options: { deliverAs: "steer", triggerTurn: true } }]);
+});
+
+test("steer: after omp's run is over the steer is left for Crew to send as the next turn", async () => {
+	const { pi, write } = await loadSteers();
+	await pi.emit("agent_start", {}, steerCtx(true, false));
+	await pi.emit("agent_end", {}, steerCtx(true, true));
+	write(1);
+	await settle();
+	assert.deepEqual(pi.sent, []);
+});
+
+test("steer: a subagent session never delivers Crew's steers", async () => {
+	const { pi, write } = await loadSteers();
+	await pi.emit("agent_start", {}, steerCtx(false, false));
+	write(1);
+	await settle();
+	assert.deepEqual(pi.sent, []);
 });
