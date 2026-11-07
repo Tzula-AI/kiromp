@@ -1,0 +1,173 @@
+/**
+ * omp ↔ Kiro Crew bridge tool-gate relay.
+ *
+ * Kiro Crew launches `pi --extension <crew>/kiro_crew_tool_gate.ts`. The gate's
+ * `tool_call` handler asks Crew for permission through `ctx.ui.confirm`, which
+ * omp's RPC mode forwards to pi-acp → Crew. When there is no dialog channel
+ * (`!ctx.hasUI`) the gate refuses the call.
+ *
+ * omp re-runs the parent's CLI extensions for every in-process `task` subagent,
+ * but with `hasUI: false`, so the stock gate refused every subagent tool call.
+ * pi-shim therefore loads this file in the gate's place (the real gate path is
+ * in $KIROCREW_OMP_GATE_TARGET); it runs the real gate factory against a wrapped
+ * `pi` whose `tool_call` handlers receive the PARENT RPC session's UI when the
+ * session itself has none. Crew still prompts for each subagent tool call
+ * exactly like a parent one, and the real gate still builds and checks the
+ * envelope.
+ *
+ * Fail-closed: a missing/invalid target throws (the extension fails to load and
+ * Crew's gate read-back fails closed); with no parent UI recorded the ctx is
+ * passed through untouched so the gate still blocks. This file never weakens
+ * the gate — it only supplies a dialog channel.
+ *
+ * It also hands the gate an `edit`'s hashline paths the way omp resolves them.
+ * omp's `read` prints files under $HOME outside the cwd as `[~/path#TAG]`, so a
+ * model copies `~/…` into its edit headers; omp expands a leading `~`/`~/` with
+ * os.homedir() (path-utils `expandTilde`), but Crew's gate refuses any header
+ * that is not absolute as written, so every such edit was denied. The gate is
+ * shown a copy whose `~`/`~/` header, `MV` and `path`/`paths` values carry this
+ * process's home — the exact file omp writes — and judges it with its full
+ * policy. Execution input is left untouched (omp expands it identically). Any
+ * other non-absolute spelling (`~user`, quoted, relative) is passed as is, so
+ * the gate still refuses it.
+ *
+ * And it answers the gate's MCP registration, which omp's ExtensionAPI lacks. Crew
+ * seals the servers it put in the session's `mcpServers` array into a handoff the
+ * gate registers with `pi.registerMcpServer`, then re-reads with `pi.getMcpServers()`;
+ * any name that fails either step is "shadowed" and the gate refuses its
+ * `mcp__<server>__` tools. On omp the call threw, so every Crew server was shadowed.
+ * Here the mount is mcp-bridge.ts's: it mounts that same array (captured from
+ * session/new by the wrapper) under exactly those `mcp__<server>__<tool>` names, and
+ * omp's own MCP config names its tools `mcp__<server>_<tool>`, so it cannot take
+ * them. When the real `pi` has no such methods, this file records each registration
+ * (a repeated name throws, as pi does for a held name) and reports the records back
+ * — the gate's shadow checks still run, and nothing is mounted here.
+ *
+ * Each omp session imports extension modules fresh, so the parent UI is shared
+ * via a globalThis symbol, not module state. Standalone on purpose (node
+ * builtins only); the omp types it touches are declared structurally below.
+ */
+
+import { homedir } from "node:os";
+import { pathToFileURL } from "node:url";
+
+type Handler = (event: unknown, ctx: RelayCtx) => unknown;
+
+/** The slice of omp's ExtensionAPI this file uses (the rest passes through). */
+interface RelayPi {
+	on(event: string, handler: Handler): void;
+}
+
+interface RelayCtx {
+	hasUI?: boolean;
+	ui?: unknown;
+}
+
+/** pi's MCP registration surface as Crew's gate uses it; omp has none of it. */
+interface McpRegistry {
+	registerMcpServer(name: string, config: unknown): void;
+	getMcpServers(): { name: string; config: unknown }[];
+}
+
+function mcpRegistry(): McpRegistry {
+	const servers = new Map<string, unknown>();
+	return {
+		registerMcpServer(name, config) {
+			if (servers.has(name)) throw new Error(`gate-relay: MCP server "${name}" is already registered`);
+			servers.set(name, config);
+		},
+		getMcpServers: () => [...servers].map(([name, config]) => ({ name, config })),
+	};
+}
+
+const TARGET_ENV = "KIROCREW_OMP_GATE_TARGET";
+const PARENT_UI = Symbol.for("omp-kiro-bridge.gate-relay.parentUI");
+const store = globalThis as unknown as Record<symbol, unknown>;
+
+function remember(ctx: RelayCtx | undefined): void {
+	if (ctx?.hasUI && ctx.ui) store[PARENT_UI] = ctx.ui;
+}
+
+/** Give a UI-less (subagent) ctx the parent's UI; otherwise leave it as is. */
+function relay(ctx: RelayCtx): RelayCtx {
+	if (ctx?.hasUI) {
+		remember(ctx);
+		return ctx;
+	}
+	const parentUi = store[PARENT_UI];
+	if (!ctx || !parentUi) return ctx;
+	// Prototype keeps the original ctx's getters (e.g. `model`) and fields readable.
+	return Object.create(ctx, { hasUI: { value: true }, ui: { value: parentUi } });
+}
+
+/** A header line of omp's hashline grammar, as Crew's gate parses it. */
+const HASHLINE_HEADER = /^\[(.+)#[0-9A-Fa-f]{4}\]$/;
+
+/** `~` / `~/…` → home, exactly as omp's `expandTilde`; anything else is left alone. */
+function expandHome(p: string, home: string): string {
+	if (p === "~") return home;
+	return p.startsWith("~/") ? home + p.slice(1) : p;
+}
+
+function anchorHashline(text: string, home: string): string {
+	return text
+		.split("\n")
+		.map((line) => {
+			const cr = line.endsWith("\r") ? "\r" : "";
+			const body = cr ? line.slice(0, -1) : line;
+			const header = HASHLINE_HEADER.exec(body);
+			if (header) return `[${expandHome(header[1], home)}${body.slice(1 + header[1].length)}${cr}`;
+			if (body.startsWith("MV ")) {
+				const dest = body.slice(3).trim();
+				const expanded = expandHome(dest, home);
+				return expanded === dest ? line : `MV ${expanded}${cr}`;
+			}
+			return line;
+		})
+		.join("\n");
+}
+
+/** The `edit` event the gate judges: `~` hashline paths anchored to $HOME. */
+function anchorEdit(e: unknown): unknown {
+	const ev = e as { toolName?: unknown; input?: Record<string, unknown> } | null;
+	const input = ev?.input;
+	if (ev?.toolName !== "edit" || !input || typeof input.input !== "string") return e;
+	const home = homedir();
+	const anchored: Record<string, unknown> = { ...input, input: anchorHashline(input.input, home) };
+	if (typeof input.path === "string") anchored.path = expandHome(input.path, home);
+	if (Array.isArray(input.paths)) {
+		anchored.paths = input.paths.map((p) => (typeof p === "string" ? expandHome(p, home) : p));
+	}
+	return { ...ev, input: anchored };
+}
+
+export default async function (pi: RelayPi): Promise<void> {
+	const target = process.env[TARGET_ENV];
+	if (!target) throw new Error(`gate-relay: ${TARGET_ENV} is not set; refusing to load without the Kiro Crew gate`);
+
+	// Runtime-selected: the gate's path is only known from the shim's env.
+	const mod = await import(target.startsWith("/") ? pathToFileURL(target).href : target);
+	const gateFactory = mod?.default;
+	if (typeof gateFactory !== "function") throw new Error(`gate-relay: ${target} has no default extension factory`);
+
+	pi.on("session_start", (_e, ctx) => remember(ctx));
+
+	const on = (event: string, handler: Handler): void => {
+		if (event === "tool_call") pi.on(event, (e, ctx) => handler(anchorEdit(e), relay(ctx)));
+		else pi.on(event, handler);
+	};
+
+	const mcp = mcpRegistry();
+	// `pi` is a class instance (private fields): resolve and bind against the real target.
+	const wrapped = new Proxy(pi as object, {
+		get(t, key) {
+			if (key === "on") return on;
+			const v = Reflect.get(t, key, t);
+			if (typeof v === "function") return v.bind(t);
+			if (v === undefined && (key === "registerMcpServer" || key === "getMcpServers")) return mcp[key];
+			return v;
+		},
+	});
+
+	await gateFactory(wrapped);
+}

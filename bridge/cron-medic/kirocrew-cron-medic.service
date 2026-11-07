@@ -1,0 +1,22 @@
+[Unit]
+Description=Kiro Crew cron medic (cron-history failure → Oh My Pi SDK fix session)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/kiromp/bridge/cron-medic
+ExecStart=/usr/bin/env bun run src/main.ts
+# Fix sessions shell out to kirocrew, omp, bun, git, pi-acp.
+Environment=PATH=%h/.local/bin:%h/.bun/bin:%h/.npm-global/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin
+# Tunables (defaults shown): CRON_MEDIC_CONCURRENCY=1 CRON_MEDIC_SIGNATURE_COOLDOWN_HOURS=6
+# CRON_MEDIC_MAX_ATTEMPTS=3 CRON_MEDIC_ATTEMPT_WINDOW_HOURS=24 CRON_MEDIC_TIMEOUT_MINUTES=45 CRON_MEDIC_DRY_RUN=0
+Restart=on-failure
+RestartSec=60
+KillSignal=SIGTERM
+TimeoutStopSec=60
+# omp's SDK exits 143 after its SIGTERM cleanup pass.
+SuccessExitStatus=143
+
+[Install]
+WantedBy=default.target

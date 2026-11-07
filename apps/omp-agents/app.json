@@ -1,0 +1,68 @@
+{
+  "name": "omp-agents",
+  "version": "0.1.0",
+  "displayName": "omp Agents",
+  "description": "Dashboard page that tallies every omp subagent by type over a time window, charts spawns and outcomes, and opens a live transcript inspector for any running or finished run. Reads omp's own session files and stats database, read-only.",
+  "author": "tommy",
+  "license": "MIT",
+  "iconPath": "assets/icon.png",
+  "tags": [
+    "omp",
+    "agents",
+    "subagents",
+    "monitoring",
+    "analytics"
+  ],
+  "highlights": [
+    "Tally of every omp subagent spawned, by agent type, over 1h to 30d or all time",
+    "Donut and stacked timeline charts, per-type table with OK rate, cost, tokens, median duration and models",
+    "Running-now list covering subagents and live top-level omp sessions",
+    "Live session inspector: click any run to read its transcript tail, refreshed every 3 s while it runs",
+    "Read-only: never writes to omp's session files or stats database"
+  ],
+  "useCases": [
+    "See which agent types omp is spawning most and how often they succeed",
+    "Watch a long-running subagent without leaving the dashboard",
+    "Attribute omp spend to agent types and models"
+  ],
+  "configuration": [
+    "Requires omp (the omp coding agent) with sessions under ~/.omp/agent/sessions and its stats database at ~/.omp/stats.db",
+    "Third-party apps with a backend need Settings > Security > Trusted apps turned on",
+    "Override locations with OMP_AGENTS_SESSIONS_DIR and OMP_AGENTS_STATS_DB if omp stores data elsewhere"
+  ],
+  "backend": {
+    "entryPoint": "backend/server.py",
+    "port": "auto",
+    "healthCheck": "/health"
+  },
+  "ui": {
+    "entry": "dist/index.mjs",
+    "pages": [
+      {
+        "route": "/apps/omp-agents",
+        "label": "Agents",
+        "icon": "Bot"
+      }
+    ]
+  },
+  "permissions": {
+    "api": [
+      "/apps/omp-agents/api",
+      "/apps/omp-agents/api/*"
+    ]
+  },
+  "dependencies": {
+    "commands": [
+      "omp"
+    ],
+    "optionalCommands": [
+      "grep"
+    ]
+  },
+  "platform": {
+    "os": [
+      "macos",
+      "linux"
+    ]
+  }
+}
