@@ -34,18 +34,100 @@ flowchart LR
 | [`bridge/`](bridge/) | The omp to Kiro Crew bridge. Puts omp behind Crew's `pi-acp` interface, streams omp subagents into Crew's Subagents tab, routes subagent tool calls through Crew's gate and supports mid-turn steering. Also includes TTSR rules and `cron-medic`, a service that starts an omp session to fix failing Crew crons. See [bridge/README.md](bridge/README.md). |
 | [`apps/omp-dashboard/`](apps/omp-dashboard/) | Kiro Crew app, one sidebar page with four tabs. Overview: API-equivalent spend over 24h to 30d, a 14-day strip, the limits closest to their cap and what the agents are doing now. Spend: breakdowns by provider, model and agent type from `~/.omp/stats.db`. Limits: `omp usage` per provider and account, with a bell notification when a limit hits 90% or runs out. Agents: a tally of omp subagent runs with charts and a live transcript inspector. Adds a composer chip that opens the limits. See [apps/omp-dashboard/README.md](apps/omp-dashboard/README.md). |
 
-## Install
+## Setup
 
-You need Kiro Crew, `omp` on your PATH, Node 20+ and Bun.
+### Prerequisites
 
-1. Bridge: follow [bridge/README.md](bridge/README.md) to point Crew's Pi backend at the wrapper.
-2. Dashboard app:
+- [Kiro Crew](https://github.com/kirodotdev/KiroCrew) installed, with the gateway running (`kirocrew status`).
+- [Oh My Pi](https://github.com/can1357/oh-my-pi) installed and logged in to at least one provider. Check with `omp --version` and `omp usage`.
+- Node 20+, plus Bun for cron-medic.
+- `~/.local/bin` on your PATH, ahead of any other `pi` or `pi-acp`.
 
-   ```sh
-   kirocrew app install ./apps/omp-dashboard
-   ```
+### 1. Clone
 
-   Then enable it from the dashboard's App Store. It's a third-party app, so Crew asks you to trust it first. That prompt is expected, and enabling from the CLI is refused until you've trusted it. It replaces the earlier `omp-usage` and `omp-agents` apps; uninstall those once it is enabled, or both will poll `omp usage` and send the same alerts.
+```sh
+git clone git@github.com:Tzula-AI/kiromp.git ~/kiromp
+cd ~/kiromp
+```
+
+The rest of this guide assumes `~/kiromp`. If you clone somewhere else, use that path instead.
+
+### 2. Install the real pi-acp adapter
+
+The bridge wraps the real `pi-acp`, so it has to be installed where the wrapper expects it:
+
+```sh
+mkdir -p ~/.kiro/crew/pi-acp
+cd ~/.kiro/crew/pi-acp && npm install pi-acp@0.0.34 && cd -
+```
+
+If you put it somewhere else, set `PI_ACP_REAL` to its `dist/index.js`.
+
+### 3. Put the bridge in front of pi and pi-acp
+
+Kiro Crew's Pi backend looks up `pi` and `pi-acp` on PATH. Point both names at the bridge:
+
+```sh
+chmod +x ~/kiromp/bridge/pi-shim.mjs ~/kiromp/bridge/pi-acp-wrapper.mjs
+ln -sf ~/kiromp/bridge/pi-shim.mjs       ~/.local/bin/pi
+ln -sf ~/kiromp/bridge/pi-acp-wrapper.mjs ~/.local/bin/pi-acp
+```
+
+Check that `which pi` points at the shim and `pi --version` prints omp's version.
+
+The shim runs `~/.bun/bin/omp` by default. If omp is installed elsewhere, set `OMP_BIN`, for example in the environment the gateway starts with.
+
+### 4. Switch Kiro Crew to the Pi backend
+
+```sh
+kirocrew config set agent.acp_backend pi
+```
+
+Restart the gateway, then open a new chat. Replies now come from omp. When omp spawns subagents they show up in the Subagents tab, and their tool calls ask for approval through Crew's gate. `kirocrew doctor` reports any missing piece.
+
+### 5. Optional: TTSR rules
+
+The rules stop tool calls that Crew's gate would deny before they run, because a single denied call fails the whole Crew run. They only load for sessions under Crew's workspace. Link them into the workspace your Crew agents run in:
+
+```sh
+mkdir -p <crew-workspace>/.agents
+ln -sfn ~/kiromp/bridge/rules <crew-workspace>/.agents/rules
+```
+
+To check that they load, run `omp ttsr list` from a folder inside that workspace.
+
+### 6. Optional: cron-medic
+
+cron-medic watches Crew's cron history and starts an omp session to fix jobs that keep failing:
+
+```sh
+cd ~/kiromp/bridge/cron-medic && bun install
+mkdir -p ~/.config/systemd/user
+cp kirocrew-cron-medic.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now kirocrew-cron-medic
+```
+
+The unit file assumes the repo is at `~/kiromp`, so change `WorkingDirectory` if you cloned it somewhere else. Set `CRON_MEDIC_DRY_RUN=1` in the unit to try it out without letting it make changes. See [bridge/cron-medic/README.md](bridge/cron-medic/README.md).
+
+### 7. Dashboard app
+
+```sh
+kirocrew app install ~/kiromp/apps/omp-dashboard
+```
+
+Then open **Apps → Library** in the dashboard and enable **OMP Dashboard**. It's a third-party app, so Crew asks you to trust it first. That prompt is expected, and `kirocrew app enable` is refused from the CLI until you've trusted it. Once it's enabled, an **OMP Dashboard** entry appears in the sidebar and a usage chip appears next to the message box.
+
+The app works without the bridge. It only needs `omp` and `~/.omp`. If you installed the older `omp-usage` or `omp-agents` apps, uninstall them, or both will poll `omp usage` and send the same alerts:
+
+```sh
+kirocrew app uninstall omp-usage
+kirocrew app uninstall omp-agents
+```
+
+### Undo
+
+Remove the two symlinks in `~/.local/bin`, run `kirocrew config set agent.acp_backend ""` and restart the gateway. Disable the app from the Library page.
 
 ## Tests
 
